@@ -134,7 +134,7 @@ ollama list
 ollama run llama3.2
 ```
 
-> **Note:** You are encouraged to explore different open source models available on [Ollama's model library](https://ollama.com/library). Different models have different strengths - experiment to find what works best for SQL generation tasks!
+> **Note:** You are welcome to install Ollama locally and deploy models on your local machine. However, you can only use models that are available on Carleton University server in your agent.
 
 ---
 
@@ -338,6 +338,7 @@ your_submission/
 ---
 
 ## Submission Requirements
+All submissions must be trhough Brightspace so that we can verify your Carleton University identity. You must create single zip file including all your work and submit the zip file.
 
 ### 1. Python Version (runtime.txt)
 
