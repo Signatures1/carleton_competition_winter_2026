@@ -66,7 +66,7 @@ Quick run (skips LLM calls, just shows data split stats):
 
   python train.py --quick
 
-Also show the TD vs OLS reinforcement learning comparison:
+Also show the GCLS vs OLS comparison (Graph-Corrected Least Squares):
 
   python train.py --td-demo
 

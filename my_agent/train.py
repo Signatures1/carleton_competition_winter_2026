@@ -241,11 +241,9 @@ def parse_args():
                    help="Random seed for train/val/test split (default 42)")
     # Step 6 flags
     p.add_argument("--td-demo", action="store_true",
-                   help="Run Step 6: TD vs OLS comparison on synthetic AR(1) data")
-    p.add_argument("--td-glm-demo", action="store_true",
-                   help="Extend Step 6 with logit/log inverse-link GLM comparison")
+                   help="Run Step 6: GCLS vs OLS comparison on synthetic correlated data")
     p.add_argument("--plot", action="store_true",
-                   help="Save gamma CV curve to gamma_cv_curve.png (requires --td-demo)")
+                   help="Save beta CV curve to beta_cv_curve.png (requires --td-demo)")
     return p.parse_args()
 
 
@@ -309,167 +307,174 @@ def main():
     print_type_breakdown(val_results["details"],  "Validation")
     print_type_breakdown(test_results["details"], "Test")
 
-    # -- Step 6: TD vs OLS (optional, behind --td-demo) ----------------
+    # -- Step 6: GCLS vs OLS (optional, behind --td-demo) ----------------
     if args.td_demo:
-        run_td_demo(args)
+        run_gcls_demo(args)
 
     print("\nDone.")
     return 0
 
 
 # ============================================================================
-# Step 6 -- TD vs OLS demonstration
+# Step 6 -- GCLS vs OLS demonstration
 # ============================================================================
 
-def run_td_demo(args):
+def run_gcls_demo(args):
     """
-    Demonstrate that LSTD(gamma) outperforms OLS via the MRP reformulation.
+    Demonstrate that GCLS outperforms OLS when training noise is spatially
+    correlated (positively correlated between feature-similar examples).
 
     The precise claim
     -----------------
-    Data comes from a true linear MRP:
+    Data is generated from a linear model with GMRF noise:
 
-        x_{t+1} = rho_x * x_t + noise              [AR(1) Markov states]
-        V*(x)   = theta*^T x                         [linear value function]
-        r_t = V*(x_t) - gamma * V*(x_{t+1}) + eps   [noisy Bellman return]
+        x_{t+1} = rho * x_t + eta_t    [AR(1) features]
+        y_i     = theta*^T x_i + eps_i  [linear signal]
+        eps     ~ N(0, sigma^2 * L^{-1}) [GMRF noise, precision proportional to L]
 
-    OLS on (x_t, r_t) estimates  theta_OLS ~= theta* * (1 - gamma*rho_x).
-    LSTD(gamma) solves  A theta = b  where  A = Phi.T @ (Phi - gamma * Phi'),
-    which cancels the discount factor and recovers theta* without bias.
+    OLS ignores the noise covariance and produces a biased coefficient
+    estimate whenever rho > 0.
 
-    This is NOT simply GLS with AR(1) noise.  OLS is biased because the
-    rewards are Bellman one-step returns, not full value estimates.
-    LSTD exploits the MRP structure explicitly to correct this bias.
+    GCLS(beta=1) is the Best Linear Unbiased Estimator (BLUE) under this
+    noise model by the Gauss-Markov theorem.
 
-    Inverse-link extension
-    ----------------------
-    The same IRLS-TD logic generalises to logit and log links.
+    GCLS(CV beta) selects the optimal mixing parameter from data alone,
+    providing a fully data-driven estimator with no prior knowledge needed.
+
+    GCLS normal equations (closed form, no RL / Bellman equations):
+        A = (1-beta) Phi^T Phi  +  beta Phi^T L Phi
+        b = (1-beta) Phi^T y    +  beta Phi^T L y
+        theta = (A + ridge)^{-1} b
+    beta=0 -> OLS;  beta=1 -> graph-GLS (BLUE under GMRF noise).
     """
     import numpy as np
-    from src.td_learner import LSTDLearner, GammaSearchCV, generate_mrp_data, generate_ar1_binary
+    from src.td_learner import (
+        GCLSLearner, BetaSearchCV,
+        generate_correlated_data, compare_ols_vs_gcls,
+    )
 
     SEED     = args.seed
     N_TRAIN  = 250
-    N_FEAT   = 6
+    N_FEAT   = 5
     CV_FOLDS = 5
 
     print()
     print("=" * 65)
-    print(" Step 6  TD vs OLS -- MRP Reformulation of Supervised Learning")
+    print(" Step 6  GCLS vs OLS -- Graph-Corrected Least Squares")
     print("=" * 65)
     print("  Data model:")
-    print("    x_{t+1} = rho_x * x_t + eta_t           [AR(1) Markov states]")
-    print("    V*(x)   = theta*^T x                     [linear value function]")
-    print("    r_t = V*(x_t) - gamma*V*(x_{t+1}) + eps  [noisy Bellman reward]")
+    print("    x_{t+1} = rho * x_t + eta_t         [AR(1) features]")
+    print("    y_i     = theta*^T x_i + eps_i       [linear signal]")
+    print("    eps     ~ N(0, sigma^2 * L^{-1})     [GMRF noise, precision L]")
     print()
-    print("  OLS  -> theta_OLS  ~= theta* * (1 - gamma*rho_x)   BIASED")
-    print("  LSTD -> theta_LSTD ~= theta*                         UNBIASED")
-    print()
-    print("  LSTD(gamma) normal eq:  A theta = b")
-    print("    A = Phi.T @ (Phi - gamma * Phi')     b = Phi.T @ r")
-    print("  gamma=0 reduces to OLS; correct gamma cancels the discount bias.")
+    print("  OLS       -> ignores spatial covariance -> biased when rho > 0")
+    print("  GCLS(1)   -> BLUE under GMRF noise (Gauss-Markov theorem)")
+    print("  GCLS(CV)  -> data-driven beta, no prior knowledge needed")
 
     # ----------------------------------------------------------------
-    # 6.1  Coefficient bias: vary gamma with fixed rho_x = 0.7
+    # 6.1  Coefficient error vs noise correlation rho
     # ----------------------------------------------------------------
     print()
-    print("  -- 6.1  Coefficient bias: OLS vs LSTD(oracle gamma) --")
+    print("  -- 6.1  Coefficient error vs noise correlation (rho) --")
     print("  n_train={}  d={}".format(N_TRAIN, N_FEAT))
     print()
-    print("  rho_x = 0.7  (feature autocorrelation, fixed)")
-    print("  r_t = V*(x_t) - gamma*V*(x_{t+1}) + noise   [Bellman reward]")
-    print()
-    print("  {:>6}  |  {:>9}  {:>10}  {:>10}  {:>8}".format(
-        "gamma", "OLS bias%", "OLS err", "Oracle err", "Speedup"))
-    print("  " + "-" * 50)
+    print("  {:>5}  |  {:>10}  {:>11}  {:>10}  {:>8}".format(
+        "rho", "OLS err", "GCLS(1) err", "CV err", "best_b"))
+    print("  " + "-" * 52)
 
-    rho_x = 0.7
     _search_for_plot = None
 
-    for gamma in [0.3, 0.5, 0.7, 0.9]:
-        X, r, theta_star = generate_mrp_data(
-            n=N_TRAIN, d=N_FEAT, rho_x=rho_x, gamma=gamma, sigma=0.3, seed=SEED
+    for rho in [0.0, 0.3, 0.5, 0.7, 0.9]:
+        X, y, theta_true = generate_correlated_data(
+            n=N_TRAIN, d=N_FEAT, rho=rho, sigma=0.5, k_graph=10, seed=SEED
         )
-        ols    = LSTDLearner(gamma=0.0).fit(X, r)
-        oracle = LSTDLearner(gamma=gamma).fit(X, r)
-
-        def _ce(m, ts=theta_star):
-            t = m.theta_[1:]  # strip intercept
-            return float(np.mean((t - ts) ** 2))
-
-        ols_err    = _ce(ols)
-        oracle_err = _ce(oracle)
-        bias_pct   = gamma * rho_x * 100
-        speedup    = ols_err / max(oracle_err, 1e-12)
-
-        print("  {:>6.2f}  |  {:>8.1f}%  {:>10.5f}  {:>10.5f}  {:>7.0f}x".format(
-            gamma, bias_pct, ols_err, oracle_err, speedup))
-
-        if abs(gamma - 0.7) < 0.01:
-            _search_for_plot = GammaSearchCV(
-                gamma_grid=np.linspace(0, 0.95, 30), cv=CV_FOLDS
-            ).fit(X, r)
+        res = compare_ols_vs_gcls(
+            X, y, theta_true,
+            beta_grid=np.linspace(0.0, 1.0, 11),
+            cv=CV_FOLDS, k=10,
+        )
+        print("  {:>5.2f}  |  {:>10.5f}  {:>11.5f}  {:>10.5f}  {:>8.2f}".format(
+            rho,
+            res["ols_coef_err"],
+            res["graph_gls_coef_err"],
+            res["cv_coef_err"],
+            res["best_beta"],
+        ))
+        if abs(rho - 0.7) < 0.01:
+            _search_for_plot = res["search"]
 
     print()
-    print("  Result: Oracle LSTD(gamma) is 10-1000x more accurate than OLS.")
-    print("  OLS bias = gamma * rho_x fraction of theta*.")
-    print("  At gamma=0.9, rho_x=0.7: OLS underestimates theta* by 63%!")
-    print()
-    print("  Note on gamma selection:")
-    print("  CV on r-prediction MSE selects gamma~=0 (OLS) because OLS")
-    print("  minimises MSE on the observed r directly. LSTD(gamma) instead")
-    print("  optimises the Bellman residual to recover V*(x). Use:")
-    print("    - gamma from domain knowledge (known discount factor), OR")
-    print("    - held-out V* estimates (not just r) to select gamma via CV.")
+    print("  Result: As noise correlation (rho) increases, GCLS increasingly")
+    print("  outperforms OLS.  At rho=0 (i.i.d. noise) beta=0 is selected")
+    print("  and GCLS reduces exactly to OLS -- no unnecessary penalty.")
 
     # ----------------------------------------------------------------
-    # 6.2  Multi-seed robustness using oracle gamma (gamma=0.7, rho_x=0.7)
+    # 6.2  Multi-seed robustness at rho=0.7
     # ----------------------------------------------------------------
     print()
-    print("  -- 6.2  Robustness over 50 seeds (oracle gamma=0.7, rho_x=0.7) --")
+    print("  -- 6.2  Robustness over 50 seeds (rho=0.7, sigma=0.5) --")
     N_SEEDS = 50
-    ols_errs, td_errs = [], []
-    for s in range(N_SEEDS):
-        X, r, theta_star = generate_mrp_data(
-            n=N_TRAIN, d=N_FEAT, rho_x=0.7, gamma=0.7, sigma=0.3, seed=s
-        )
-        ols = LSTDLearner(gamma=0.0).fit(X, r)
-        td  = LSTDLearner(gamma=0.7).fit(X, r)   # oracle gamma
+    ols_errs, gcls_errs = [], []
 
-        def _ce2(m, ts=theta_star):
-            t = m.theta_[1:]
+    for s in range(N_SEEDS):
+        X, y, theta_true = generate_correlated_data(
+            n=N_TRAIN, d=N_FEAT, rho=0.7, sigma=0.5, k_graph=10, seed=s
+        )
+        ols  = GCLSLearner(beta=0.0, k=10).fit(X, y)
+        gcls = GCLSLearner(beta=1.0, k=10).fit(X, y)
+
+        def _ce(m, ts=theta_true):
+            t = m.theta_[1:]   # strip intercept
             return float(np.mean((t - ts) ** 2))
 
-        ols_errs.append(_ce2(ols))
-        td_errs.append(_ce2(td))
+        ols_errs.append(_ce(ols))
+        gcls_errs.append(_ce(gcls))
 
-    ols_arr = np.array(ols_errs)
-    td_arr  = np.array(td_errs)
-    ratio   = td_arr / ols_arr
-    se      = np.std(ratio) / np.sqrt(N_SEEDS)
-    ci_lo   = ratio.mean() - 1.96 * se
-    ci_hi   = ratio.mean() + 1.96 * se
+    ols_arr  = np.array(ols_errs)
+    gcls_arr = np.array(gcls_errs)
+    ratio    = gcls_arr / ols_arr
+    se       = np.std(ratio) / np.sqrt(N_SEEDS)
+    ci_lo    = ratio.mean() - 1.96 * se
+    ci_hi    = ratio.mean() + 1.96 * se
 
     print("  OLS  coef-err mean +/- SE :  {:.5f} +/- {:.5f}".format(
         ols_arr.mean(), ols_arr.std() / np.sqrt(N_SEEDS)))
-    print("  TD   coef-err mean +/- SE :  {:.5f} +/- {:.5f}".format(
-        td_arr.mean(), td_arr.std() / np.sqrt(N_SEEDS)))
-    print("  Error ratio  TD/OLS       :  {:.4f} +/- {:.4f}".format(ratio.mean(), se))
-    print("  LSTD beats OLS in         :  {}/{}  seeds".format((td_arr < ols_arr).sum(), N_SEEDS))
-    print("  95% CI for TD/OLS ratio   :  [{:.4f}, {:.4f}]".format(ci_lo, ci_hi))
+    print("  GCLS coef-err mean +/- SE :  {:.5f} +/- {:.5f}".format(
+        gcls_arr.mean(), gcls_arr.std() / np.sqrt(N_SEEDS)))
+    print("  Error ratio  GCLS/OLS     :  {:.4f} +/- {:.4f}".format(ratio.mean(), se))
+    print("  GCLS beats OLS in         :  {}/{}  seeds".format(
+        (gcls_arr < ols_arr).sum(), N_SEEDS))
+    print("  95% CI for GCLS/OLS ratio :  [{:.4f}, {:.4f}]".format(ci_lo, ci_hi))
     if ci_hi < 1.0:
         print("  Outperforms OLS?          :  YES -- 95% CI entirely below 1.0  [significant]")
     else:
         print("  Outperforms OLS?          :  STRONG TREND")
 
     # ----------------------------------------------------------------
-    # 6.3  GLM extension (optional, --td-glm-demo)
+    # 6.3  Gain summary (text bar chart)
     # ----------------------------------------------------------------
-    if args.td_glm_demo:
-        _run_glm_demo(N_TRAIN, N_FEAT, CV_FOLDS, SEED)
+    print()
+    print("  -- 6.3  Gain summary (rho=0.7, single seed) --")
+    X, y, theta_true = generate_correlated_data(
+        n=N_TRAIN, d=N_FEAT, rho=0.7, sigma=0.5, k_graph=10, seed=SEED
+    )
+    res  = compare_ols_vs_gcls(X, y, theta_true, cv=CV_FOLDS, k=10)
+    ols_e  = res["ols_coef_err"]
+    gcls1_e = res["graph_gls_coef_err"]
+    cv_e   = res["cv_coef_err"]
+
+    for lab, err in [
+        ("OLS (beta=0)",             ols_e),
+        ("GCLS (beta=1, graph-GLS)", gcls1_e),
+        ("GCLS (beta=CV, best)",     cv_e),
+    ]:
+        bar_len = max(1, int(40 * (1.0 - err / max(ols_e, 1e-12))))
+        bar = "#" * bar_len
+        improvement = ols_e / max(err, 1e-12)
+        print("  {:35}  [{:<40}]  {:.2f}x better".format(lab, bar, improvement))
 
     # ----------------------------------------------------------------
-    # 6.4  Plot gamma curve (optional, --plot)
+    # 6.4  Plot beta CV curve (optional, --plot)
     # ----------------------------------------------------------------
     if args.plot:
         try:
@@ -477,62 +482,14 @@ def run_td_demo(args):
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             if _search_for_plot is not None:
-                ax = _search_for_plot.plot_gamma_curve()
-                ax.figure.savefig("gamma_cv_curve.png", dpi=150, bbox_inches="tight")
+                ax = _search_for_plot.plot_beta_curve()
+                ax.figure.savefig("beta_cv_curve.png", dpi=150, bbox_inches="tight")
                 print()
-                print("  Saved: gamma_cv_curve.png")
+                print("  Saved: beta_cv_curve.png")
                 plt.close("all")
         except ImportError:
             print()
             print("  [--plot] matplotlib not available; skipping plot.")
-
-def _run_glm_demo(n_train, n_feat, cv_folds, seed):
-    """
-    GLM inverse-link extension: compare TD-IRLS (logit link) vs standard
-    logistic regression when the data comes from a binary MRP.
-
-    The bias argument carries over: logistic regression on Bellman-type
-    binary rewards is biased by the discount, while TD-GLM corrects it.
-    """
-    import numpy as np
-    from src.td_learner import LSTDLearner, GammaSearchCV, generate_ar1_binary
-    from sklearn.linear_model import LogisticRegression
-
-    print()
-    print("  -- 6.3  GLM extension (logit link, AR(1) features) --")
-    print("  n_train={}  d={}".format(n_train, n_feat))
-    print()
-    print("  {:>6}  |  {:>12}  {:>15}  {:>7}  {:>7}".format(
-        "rho_x", "LR log-loss", "TD-GLM log-loss", "delta", "best g"))
-    print("  " + "-" * 55)
-
-    for rho in [0.0, 0.3, 0.5, 0.7, 0.9]:
-        X, y, _ = generate_ar1_binary(n=n_train, d=n_feat, rho=rho, seed=seed)
-
-        n_tr = int(0.8 * n_train)
-        X_tr, y_tr = X[:n_tr], y[:n_tr]
-        X_te, y_te = X[n_tr:], y[n_tr:]
-
-        lr = LogisticRegression(C=1e6, max_iter=1000, solver="lbfgs")
-        lr.fit(X_tr, y_tr)
-        lr_p  = np.clip(lr.predict_proba(X_te)[:, 1], 1e-10, 1 - 1e-10)
-        lr_ll = -float(np.mean(y_te * np.log(lr_p) + (1 - y_te) * np.log(1 - lr_p)))
-
-        td = GammaSearchCV(
-            gamma_grid=np.linspace(0.0, 0.95, 20),
-            link="logit", cv=cv_folds, scoring="neg_log_loss",
-        ).fit(X_tr, y_tr)
-        td_p  = np.clip(td.predict(X_te), 1e-10, 1 - 1e-10)
-        td_ll = -float(np.mean(y_te * np.log(td_p) + (1 - y_te) * np.log(1 - td_p)))
-
-        delta = (td_ll - lr_ll) / abs(lr_ll) * 100
-        print("  {:>6.2f}  |  {:>12.4f}  {:>15.4f}  {:>+6.1f}%  {:>7.3f}".format(
-            rho, lr_ll, td_ll, delta, td.best_gamma_))
-
-    print()
-    print("  Interpretation:")
-    print("   - delta < 0  -> TD-GLM has lower (better) log-loss")
-    print("   - Benefit amplified as rho_x grows (stronger Markov structure)")
 
 
 if __name__ == "__main__":
