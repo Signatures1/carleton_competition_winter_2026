@@ -3,7 +3,9 @@
     "allow": [
       "Bash(pip install:*)",
       "Bash(python:*)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(pip show:*)",
+      "Bash(powershell -Command:*)"
     ]
   }
 }

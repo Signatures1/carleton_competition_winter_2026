@@ -1,0 +1,117 @@
+========================================
+ HOW TO RUN & TEST THE SQL QUERY AGENT
+========================================
+
+CURRENT SETUP
+-------------
+- Model : llama3.2 (3B, running locally)
+- DB    : bike_store.db (auto-downloaded from Kaggle on first run)
+- Host  : http://127.0.0.1:11434 (local Ollama)
+
+NOTE: llama3.3 (70B) requires the Carleton University server.
+      To use it, update .env with the Carleton server URL and set
+      OLLAMA_MODEL=llama3.3  (see SWITCHING MODELS section below).
+
+
+----------------------------------------
+ STEP 1 — Make sure Ollama is running
+----------------------------------------
+
+Open Task Manager and confirm "ollama.exe" is in the background processes.
+If it is not running, start it from:
+  C:\Users\shenx\AppData\Local\Programs\Ollama\ollama.exe
+
+Or just open the Ollama tray app from the Start Menu.
+
+
+----------------------------------------
+ STEP 2 — Open a terminal in my_agent/
+----------------------------------------
+
+  cd path\to\carleton_competition_winter_2026\my_agent
+
+
+----------------------------------------
+ STEP 3 — Install dependencies (once)
+----------------------------------------
+
+  pip install -r requirements.txt
+
+
+----------------------------------------
+ STEP 4 — Interactive testing (main.py)
+----------------------------------------
+
+  python main.py
+
+Then type any natural language question, for example:
+  > How many customers are there?
+  > What are the top 5 most expensive products?
+  > Show me all orders from 2018
+  > Which store has the most inventory?
+  > What is the total revenue by brand?
+
+Type 'quit' or 'exit' to stop.
+
+
+----------------------------------------
+ STEP 5 — Accuracy evaluation (train.py)
+----------------------------------------
+
+Run the full evaluation (val + test accuracy printed to terminal):
+
+  python train.py
+
+Quick run (skips LLM calls, just shows data split stats):
+
+  python train.py --quick
+
+Also show the TD vs OLS reinforcement learning comparison:
+
+  python train.py --td-demo
+
+
+----------------------------------------
+ SWITCHING MODELS
+----------------------------------------
+
+Edit the file: my_agent/.env
+
+  Option A — Keep using local llama3.2 (default, no changes needed):
+    OLLAMA_HOST=http://127.0.0.1:11434
+    OLLAMA_MODEL=llama3.2
+
+  Option B — Use Carleton University server with llama3.3:
+    1. Request access at https://carleton.ca/rcs/llm-access/
+       (use your Carleton email, ask for llama3.3)
+    2. Update .env with the URL they provide:
+         OLLAMA_HOST=https://<carleton-server-url>
+         OLLAMA_MODEL=llama3.3
+    3. No local model download needed — runs on their server.
+
+  Other good local models (run these to download, then update OLLAMA_MODEL):
+    python -c "import ollama; ollama.Client(host='http://127.0.0.1:11434').pull('qwen2.5-coder:7b')"
+    -> Then set OLLAMA_MODEL=qwen2.5-coder:7b in .env
+    -> qwen2.5-coder is purpose-built for SQL/code, ~4.7 GB
+
+
+----------------------------------------
+ FILE STRUCTURE REFERENCE
+----------------------------------------
+
+my_agent/
+├── agent.py          <- QueryWriter class (the competition submission)
+├── main.py           <- interactive tester
+├── train.py          <- accuracy evaluation + TD/RL demo
+├── requirements.txt  <- dependencies
+├── runtime.txt       <- python-3.13.12
+├── .env              <- your Ollama config (do NOT commit this)
+├── .env.example      <- template for .env
+├── db/
+│   └── bike_store.py <- downloads + loads the database
+└── src/
+    ├── training_data.py  <- 74 labeled question->SQL examples
+    └── td_learner.py     <- LSTD/TD learning classes
+
+
+========================================
