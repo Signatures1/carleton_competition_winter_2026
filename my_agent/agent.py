@@ -46,15 +46,50 @@ def get_model_name() -> str:
 # Few-shot example retriever
 # ---------------------------------------------------------------------------
 
+# Keyword signals for each query type.  Multiple matches → higher confidence.
+_TYPE_SIGNALS: dict = {
+    "count":       ["how many", "total number of", "count the number"],
+    "distinct":    ["what states", "what cities", "what model year", "what years",
+                    "distinct", "unique values"],
+    "top_n":       ["top 5", "top 10", "top 3", "top 1", "most expensive",
+                    "cheapest", "most recent", "least expensive", "best ",
+                    "lowest priced", "highest priced", "3 most", "5 most",
+                    "10 most", "10 least"],
+    "aggregation": ["average", "total revenue", "maximum", "minimum",
+                    "most inventory", "highest stock", "what is the max",
+                    "what is the min", "what is the avg", "what is the total"],
+    "group_by":    ["per store", "per brand", "per category", "per year",
+                    "per month", "each store", "each brand", "each category",
+                    "each year", "each month", "by brand", "by category",
+                    "by store", "by year", "by month", "how many orders per",
+                    "how many products per"],
+    "filter":      ["under $", "over $", "less than $", "more than $",
+                    "from 2018", "from 2019", "in 2018", "in 2019", "active",
+                    "completed", "new york", "model year 20", "trek",
+                    "priced between", "price range"],
+    "complex":     ["never been ordered", "out of stock", "most money",
+                    "best-selling", "has handled", "has placed", "has spent",
+                    "more than 2 orders", "not been", "have never"],
+    "join":        ["with their brand", "with their category", "with their store",
+                    "with order dates", "with customer names", "and their store",
+                    "and brand", "and category", "with product names"],
+    "select":      ["list all", "show all", "list the", "show the"],
+}
+
+
 class ExampleRetriever:
     """
     Given a pool of labeled (question, sql) examples, retrieves the k most
-    semantically relevant examples for a new query using TF-IDF cosine
-    similarity.
+    semantically relevant examples for a new query using a hybrid of
+    TF-IDF cosine similarity and query-type-aware selection.
 
     This is the 'supervised learning' component: the TF-IDF vectorizer is
     *fitted* on the training split, and all downstream retrievals are made
     relative to that learned vocabulary.
+
+    Type-aware selection guarantees that at least half of the returned
+    examples come from the predicted query type, preventing TF-IDF
+    stop-word collisions from returning completely irrelevant examples.
     """
 
     def __init__(self, examples: list):
@@ -69,17 +104,70 @@ class ExampleRetriever:
         questions = [ex["question"] for ex in examples]
         self.vectorizer = TfidfVectorizer(
             ngram_range=(1, 2),
-            stop_words="english",
+            stop_words=None,        # keep all tokens: "how many" is diagnostic
             sublinear_tf=True,
+            min_df=1,
         )
         self.tfidf_matrix = self.vectorizer.fit_transform(questions)
 
-    def retrieve(self, query: str, k: int = 4) -> list:
-        """Return the k most similar examples to *query*."""
+    # ------------------------------------------------------------------
+    def _guess_type(self, query: str) -> str | None:
+        """
+        Keyword-heuristic classifier returning the most likely query type.
+        Returns None when no signal fires (falls back to pure TF-IDF).
+        """
+        q = query.lower()
+        # Strong override: "each/per <time|dimension>" always means GROUP BY,
+        # even when "how many" is also present.
+        _group_overrides = (
+            "each month", "each year", "each store", "each brand",
+            "each category", "per month", "per year", "per store",
+            "per brand", "per category",
+        )
+        if any(sig in q for sig in _group_overrides):
+            return "group_by"
+        scores = {t: sum(1 for sig in sigs if sig in q)
+                  for t, sigs in _TYPE_SIGNALS.items()}
+        best, best_score = max(scores.items(), key=lambda kv: kv[1])
+        return best if best_score > 0 else None
+
+    # ------------------------------------------------------------------
+    def retrieve(self, query: str, k: int = 6) -> list:
+        """
+        Return the k most relevant examples for *query*.
+
+        Strategy
+        --------
+        1. TF-IDF cosine similarity ranks all training examples.
+        2. Keyword heuristics guess the query type.
+        3. At least ceil(k/2) slots are filled from same-type examples
+           (ranked by TF-IDF); the remaining slots come from the global
+           top-similarity examples regardless of type.
+        4. Final list is re-sorted by TF-IDF score for coherent ordering.
+        """
         query_vec = self.vectorizer.transform([query])
         sims = self._cosine_similarity(query_vec, self.tfidf_matrix)[0]
-        top_k = self._np.argsort(sims)[::-1][:k]
-        return [self.examples[i] for i in top_k]
+        all_ranked = self._np.argsort(sims)[::-1]
+
+        guessed = self._guess_type(query)
+        if guessed:
+            n_type  = max(2, (k + 1) // 2)
+            same    = [i for i in all_ranked
+                       if self.examples[i].get("type") == guessed]
+            other   = [i for i in all_ranked
+                       if self.examples[i].get("type") != guessed]
+            n_type  = min(n_type, len(same))
+            n_other = k - n_type
+            # Present other-type examples first, same-type examples last.
+            # LLMs weight later (closer-to-question) examples most heavily,
+            # so same-type examples at the end have maximum influence.
+            same_top  = sorted(same[:n_type],  key=lambda i: sims[i], reverse=True)
+            other_top = sorted(other[:n_other], key=lambda i: sims[i], reverse=True)
+            picked = other_top + same_top
+        else:
+            picked = list(all_ranked[:k])
+
+        return [self.examples[i] for i in picked[:k]]
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +189,12 @@ Key relationships:
 
 orders.order_status values: 1=Pending, 2=Processing, 3=Rejected, 4=Completed
 staffs.active values:       1=Active, 0=Inactive
+
+IMPORTANT column notes:
+  products.model_year is an INTEGER (e.g. 2016, 2017, 2018, 2019).
+    Use WHERE model_year = 2018 — do NOT use EXTRACT() on this column.
+  order_date, required_date, shipped_date are DATE columns.
+    Use EXTRACT(YEAR FROM order_date) = 2019 to filter by year.
 """.strip()
 
 
@@ -183,10 +277,23 @@ class QueryWriter:
             "=== RULES ===",
             "- Return ONLY the raw SQL query — no explanations, no markdown, no code fences.",
             "- Do NOT wrap the query in ```sql ... ``` or any other delimiters.",
+            "- Use the exact column and table names from the schema above.",
             "- Use proper table aliases in JOIN queries.",
             "- Use DuckDB-compatible syntax.",
             "- For year/month extraction use EXTRACT(YEAR FROM col) / EXTRACT(MONTH FROM col).",
             "- For revenue calculations use: quantity * list_price * (1 - discount).",
+            "- For COUNT queries ('how many'), always use COUNT(*) with an alias.",
+            "- For DISTINCT value queries ('what X exist / are available'), use SELECT DISTINCT.",
+            "- Do NOT add DISTINCT unless the question explicitly asks for unique or distinct values.",
+            "- Always add ORDER BY when the question implies ranking or a list.",
+            "- For GROUP BY queries, include all non-aggregated SELECT columns in GROUP BY.",
+            "- 'Per store / per brand / per category / per year / per month' means GROUP BY that dimension.",
+            "- For GROUP BY queries, always include the grouped dimension as the first SELECT column.",
+            "- 'Placed in YEAR' or 'from YEAR' on orders means WHERE EXTRACT(YEAR FROM order_date) = YEAR.",
+            "- When asked 'which X has the highest/best Y' (single winner), use LIMIT 1.",
+            "- When showing products joined with other tables, always include p.list_price in SELECT.",
+            "- When querying staffs without asking for store info, SELECT first_name, last_name, email — do not JOIN stores.",
+            "- For 'show order items', select: order_id, order_date, product_name, quantity, list_price.",
         ]
         if few_shot_block:
             parts += [
@@ -201,7 +308,7 @@ class QueryWriter:
     def _build_few_shot_block(self, prompt: str) -> str:
         if self.retriever is None:
             return ""
-        examples = self.retriever.retrieve(prompt, k=4)
+        examples = self.retriever.retrieve(prompt, k=6)
         lines = []
         for ex in examples:
             lines.append(f"Q: {ex['question']}")

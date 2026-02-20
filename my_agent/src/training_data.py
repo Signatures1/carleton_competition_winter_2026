@@ -63,6 +63,21 @@ LABELED_EXAMPLES = [
         "sql": "SELECT COUNT(*) AS total_categories FROM categories",
         "type": "count",
     },
+    {
+        "question": "What is the total number of products?",
+        "sql": "SELECT COUNT(*) AS total_products FROM products",
+        "type": "count",
+    },
+    {
+        "question": "How many orders have been placed in total?",
+        "sql": "SELECT COUNT(*) AS total_orders FROM orders",
+        "type": "count",
+    },
+    {
+        "question": "How many items are in the order_items table?",
+        "sql": "SELECT COUNT(*) AS total_items FROM order_items",
+        "type": "count",
+    },
 
     # ---------------------------------------------------------------
     # Simple SELECT queries
@@ -136,6 +151,35 @@ LABELED_EXAMPLES = [
             "SELECT o.order_id, c.first_name, c.last_name, o.order_date "
             "FROM orders o JOIN customers c ON o.customer_id = c.customer_id "
             "ORDER BY o.order_date DESC LIMIT 5"
+        ),
+        "type": "top_n",
+    },
+    {
+        "question": "What are the 5 least expensive products?",
+        "sql": "SELECT product_name, list_price FROM products ORDER BY list_price ASC LIMIT 5",
+        "type": "top_n",
+    },
+    {
+        "question": "Show the 3 oldest orders",
+        "sql": "SELECT order_id, order_date, customer_id FROM orders ORDER BY order_date ASC LIMIT 3",
+        "type": "top_n",
+    },
+    {
+        "question": "What are the top 3 brands by number of products?",
+        "sql": (
+            "SELECT b.brand_name, COUNT(p.product_id) AS product_count "
+            "FROM products p JOIN brands b ON p.brand_id = b.brand_id "
+            "GROUP BY b.brand_name ORDER BY product_count DESC LIMIT 3"
+        ),
+        "type": "top_n",
+    },
+    {
+        "question": "Which 5 customers made the most orders?",
+        "sql": (
+            "SELECT c.first_name, c.last_name, COUNT(o.order_id) AS order_count "
+            "FROM customers c JOIN orders o ON c.customer_id = o.customer_id "
+            "GROUP BY c.customer_id, c.first_name, c.last_name "
+            "ORDER BY order_count DESC LIMIT 5"
         ),
         "type": "top_n",
     },
@@ -279,6 +323,36 @@ LABELED_EXAMPLES = [
         ),
         "type": "group_by",
     },
+    {
+        "question": "How many orders are there per store?",
+        "sql": (
+            "SELECT s.store_name, COUNT(o.order_id) AS order_count "
+            "FROM orders o JOIN stores s ON o.store_id = s.store_id "
+            "GROUP BY s.store_name ORDER BY order_count DESC"
+        ),
+        "type": "group_by",
+    },
+    {
+        "question": "What is the total revenue per category?",
+        "sql": (
+            "SELECT c.category_name, "
+            "SUM(oi.quantity * oi.list_price * (1 - oi.discount)) AS total_revenue "
+            "FROM order_items oi "
+            "JOIN products p ON oi.product_id = p.product_id "
+            "JOIN categories c ON p.category_id = c.category_id "
+            "GROUP BY c.category_name ORDER BY total_revenue DESC"
+        ),
+        "type": "group_by",
+    },
+    {
+        "question": "How many products are available per brand?",
+        "sql": (
+            "SELECT b.brand_name, COUNT(p.product_id) AS product_count "
+            "FROM products p JOIN brands b ON p.brand_id = b.brand_id "
+            "GROUP BY b.brand_name ORDER BY product_count DESC"
+        ),
+        "type": "group_by",
+    },
 
     # ---------------------------------------------------------------
     # JOIN queries (2-table)
@@ -293,10 +367,30 @@ LABELED_EXAMPLES = [
         "type": "join",
     },
     {
+        "question": "List products with brand name and price",
+        "sql": (
+            "SELECT p.product_name, b.brand_name, p.list_price "
+            "FROM products p JOIN brands b ON p.brand_id = b.brand_id "
+            "ORDER BY p.product_name"
+        ),
+        "type": "join",
+    },
+    {
         "question": "Show all products with their category names",
         "sql": (
             "SELECT p.product_name, c.category_name, p.list_price "
             "FROM products p JOIN categories c ON p.category_id = c.category_id "
+            "ORDER BY p.product_name"
+        ),
+        "type": "join",
+    },
+    {
+        "question": "Show products with their brand and category and price",
+        "sql": (
+            "SELECT p.product_name, b.brand_name, c.category_name, p.list_price "
+            "FROM products p "
+            "JOIN brands b ON p.brand_id = b.brand_id "
+            "JOIN categories c ON p.category_id = c.category_id "
             "ORDER BY p.product_name"
         ),
         "type": "join",
@@ -356,6 +450,17 @@ LABELED_EXAMPLES = [
         ),
         "type": "join",
     },
+    {
+        "question": "List order details with product names and quantities",
+        "sql": (
+            "SELECT o.order_id, o.order_date, p.product_name, oi.quantity, oi.list_price "
+            "FROM order_items oi "
+            "JOIN orders o ON oi.order_id = o.order_id "
+            "JOIN products p ON oi.product_id = p.product_id "
+            "ORDER BY o.order_id"
+        ),
+        "type": "join",
+    },
 
     # ---------------------------------------------------------------
     # WHERE filter queries
@@ -401,6 +506,14 @@ LABELED_EXAMPLES = [
         "type": "filter",
     },
     {
+        "question": "List all inactive staff members",
+        "sql": (
+            "SELECT first_name, last_name, email FROM staffs "
+            "WHERE active = 0 ORDER BY last_name"
+        ),
+        "type": "filter",
+    },
+    {
         "question": "List products from model year 2018",
         "sql": (
             "SELECT product_name, list_price FROM products "
@@ -433,6 +546,23 @@ LABELED_EXAMPLES = [
         ),
         "type": "filter",
     },
+    {
+        "question": "Find all orders placed in 2016",
+        "sql": (
+            "SELECT order_id, customer_id, order_date, order_status FROM orders "
+            "WHERE EXTRACT(YEAR FROM order_date) = 2016 ORDER BY order_date"
+        ),
+        "type": "filter",
+    },
+    {
+        "question": "Show orders shipped in January 2018",
+        "sql": (
+            "SELECT order_id, customer_id, shipped_date FROM orders "
+            "WHERE EXTRACT(YEAR FROM shipped_date) = 2018 "
+            "AND EXTRACT(MONTH FROM shipped_date) = 1 ORDER BY shipped_date"
+        ),
+        "type": "filter",
+    },
 
     # ---------------------------------------------------------------
     # DISTINCT
@@ -450,6 +580,26 @@ LABELED_EXAMPLES = [
     {
         "question": "What cities are stores located in?",
         "sql": "SELECT DISTINCT city, state FROM stores ORDER BY state, city",
+        "type": "distinct",
+    },
+    {
+        "question": "What unique cities do customers live in?",
+        "sql": "SELECT DISTINCT city FROM customers ORDER BY city",
+        "type": "distinct",
+    },
+    {
+        "question": "List all distinct order statuses",
+        "sql": "SELECT DISTINCT order_status FROM orders ORDER BY order_status",
+        "type": "distinct",
+    },
+    {
+        "question": "What brands are available in the store?",
+        "sql": "SELECT DISTINCT brand_name FROM brands ORDER BY brand_name",
+        "type": "distinct",
+    },
+    {
+        "question": "What zip codes do customers come from?",
+        "sql": "SELECT DISTINCT zip_code FROM customers ORDER BY zip_code",
         "type": "distinct",
     },
 
