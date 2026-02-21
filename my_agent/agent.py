@@ -13,12 +13,22 @@ Strategy
 
 Environment variables
 ---------------------
-OLLAMA_HOST   - Ollama server URL   (default: http://localhost:11434)
-OLLAMA_MODEL  - Model to use        (default: llama3.2)
+OLLAMA_HOST    - Ollama server URL   (default: http://localhost:11434)
+OLLAMA_MODEL   - Model to use        (default: llama3.2)
+OLLAMA_API_KEY - Bearer token for authenticated servers (set in secrets.env)
 """
 
 import os
 import re
+
+# Load .env (config) then secrets.env (credentials) — best-effort, quiet on failure
+try:
+    from dotenv import load_dotenv as _ld
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _ld(os.path.join(_here, ".env"),     override=False)
+    _ld(os.path.join(_here, "secrets.env"), override=False)
+except ImportError:
+    pass
 
 from db.bike_store import get_schema_info
 
@@ -31,9 +41,13 @@ def get_ollama_client():
     Return an Ollama client pointed at either the Carleton server or localhost.
 
     Set OLLAMA_HOST to override the default local instance.
+    Set OLLAMA_API_KEY to pass a Bearer token (required for the Carleton server).
     """
     import ollama
     host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    api_key = os.getenv("OLLAMA_API_KEY", "")
+    if api_key:
+        return ollama.Client(host=host, headers={"Authorization": f"Bearer {api_key}"})
     return ollama.Client(host=host)
 
 
@@ -195,6 +209,11 @@ IMPORTANT column notes:
     Use WHERE model_year = 2018 — do NOT use EXTRACT() on this column.
   order_date, required_date, shipped_date are DATE columns.
     Use EXTRACT(YEAR FROM order_date) = 2019 to filter by year.
+  products.list_price: When listing products joined with brands or categories
+    (product detail queries, no aggregation), list_price MUST appear in SELECT
+    alongside product_name and brand_name/category_name.
+  stocks.quantity: When aggregating stock ACROSS ALL STORES, use SUM(quantity)
+    with GROUP BY p.product_id, p.product_name — do NOT list per-store rows.
 """.strip()
 
 
@@ -279,21 +298,33 @@ class QueryWriter:
             "- Do NOT wrap the query in ```sql ... ``` or any other delimiters.",
             "- Use the exact column and table names from the schema above.",
             "- Use proper table aliases in JOIN queries.",
-            "- Use DuckDB-compatible syntax.",
+            "- Use DuckDB-compatible syntax ONLY — no MySQL, no PostgreSQL dialects.",
+            "- NEVER use backticks (`) around table or column names — DuckDB uses plain names or double-quotes.",
+            "- NEVER write SELECT * — always list the specific columns needed.",
+            "- Do NOT add a semicolon at the end of the query.",
             "- For year/month extraction use EXTRACT(YEAR FROM col) / EXTRACT(MONTH FROM col).",
-            "- For revenue calculations use: quantity * list_price * (1 - discount).",
-            "- For COUNT queries ('how many'), always use COUNT(*) with an alias.",
-            "- For DISTINCT value queries ('what X exist / are available'), use SELECT DISTINCT.",
+            "- For revenue: ALWAYS use quantity * list_price * (1 - discount). NEVER omit (1 - discount).",
+            "- For COUNT queries ('how many'), always use COUNT(*) AS <alias>.",
+            "- For DISTINCT value queries ('what X exist / are available / unique'), use SELECT DISTINCT.",
             "- Do NOT add DISTINCT unless the question explicitly asks for unique or distinct values.",
             "- Always add ORDER BY when the question implies ranking or a list.",
             "- For GROUP BY queries, include all non-aggregated SELECT columns in GROUP BY.",
+            "- When grouping by product, always GROUP BY p.product_id, p.product_name (not just product_name).",
+            "- When grouping by customer, always GROUP BY c.customer_id, c.first_name, c.last_name.",
             "- 'Per store / per brand / per category / per year / per month' means GROUP BY that dimension.",
             "- For GROUP BY queries, always include the grouped dimension as the first SELECT column.",
             "- 'Placed in YEAR' or 'from YEAR' on orders means WHERE EXTRACT(YEAR FROM order_date) = YEAR.",
             "- When asked 'which X has the highest/best Y' (single winner), use LIMIT 1.",
-            "- When showing products joined with other tables, always include p.list_price in SELECT.",
+            "- When joining products with brands or categories (product detail listing, no aggregation), ALWAYS include p.list_price: e.g. SELECT p.product_name, b.brand_name, p.list_price.",
+            "- For stock/inventory queries (involving the stocks table) or revenue aggregations (GROUP BY + SUM), do NOT add p.list_price as a standalone SELECT column.",
+            "- For 'quantities across all stores' or 'total stock', use SUM(sk.quantity) AS total_stock with GROUP BY product — NOT per-store rows.",
+            "- When asked 'which X have the highest/best Y' (plural X like brands/categories), use LIMIT 5.",
+            "- Any query about store cities/locations MUST use SELECT DISTINCT city, state — always include BOTH city and state.",
+            "- When filtering customers by state, city, or zip_code, SELECT first_name, last_name, city and ORDER BY last_name.",
+            "- When displaying stores in results, always SELECT store_name (not store_id).",
             "- When querying staffs without asking for store info, SELECT first_name, last_name, email — do not JOIN stores.",
             "- For 'show order items', select: order_id, order_date, product_name, quantity, list_price.",
+            "- SELECT only the columns the question asks for — do not add extra ID columns unless asked.",
         ]
         if few_shot_block:
             parts += [

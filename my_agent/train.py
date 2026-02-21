@@ -49,10 +49,11 @@ from collections import defaultdict
 import numpy as np
 import duckdb
 
-# Load .env if python-dotenv is available (best-effort)
+# Load .env (config) then secrets.env (credentials) — best-effort, quiet on failure
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv()                      # loads .env  (non-secret settings)
+    load_dotenv("secrets.env")         # loads secrets.env (API keys, gitignored)
 except ImportError:
     pass
 

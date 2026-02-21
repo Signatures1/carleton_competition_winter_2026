@@ -1,6 +1,9 @@
 # Environment and secrets
 .env
 *.env.local
+secrets.env
+*.secrets.env
+my_agent/secrets.env
 
 # Generated PDF (keep separate from repo)
 COMPETITION_GUIDE.pdf

@@ -75,7 +75,7 @@ Original contributions
 * Pairwise-difference objective for spatially correlated SL noise
 * Feature-graph as a data-driven proxy for the noise precision matrix
 * Closed-form beta-parameterised estimator unifying OLS and graph-GLS
-* No Bellman equations, no Markov Reward Process, no RL framing
+* Purely supervised; derives from classical statistics (GLS, GMRF, Gauss-Markov)
 """
 
 from __future__ import annotations

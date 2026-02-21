@@ -396,6 +396,15 @@ LABELED_EXAMPLES = [
         "type": "join",
     },
     {
+        "question": "Show all products with their brand and price",
+        "sql": (
+            "SELECT p.product_name, b.brand_name, p.list_price "
+            "FROM products p JOIN brands b ON p.brand_id = b.brand_id "
+            "ORDER BY p.product_name"
+        ),
+        "type": "join",
+    },
+    {
         "question": "List orders with customer names",
         "sql": (
             "SELECT o.order_id, c.first_name, c.last_name, o.order_date "
@@ -563,6 +572,22 @@ LABELED_EXAMPLES = [
         ),
         "type": "filter",
     },
+    {
+        "question": "List customers from California",
+        "sql": (
+            "SELECT first_name, last_name, city FROM customers "
+            "WHERE state = 'CA' ORDER BY last_name"
+        ),
+        "type": "filter",
+    },
+    {
+        "question": "Show customers who live in Texas",
+        "sql": (
+            "SELECT first_name, last_name, city FROM customers "
+            "WHERE state = 'TX' ORDER BY last_name"
+        ),
+        "type": "filter",
+    },
 
     # ---------------------------------------------------------------
     # DISTINCT
@@ -579,6 +604,11 @@ LABELED_EXAMPLES = [
     },
     {
         "question": "What cities are stores located in?",
+        "sql": "SELECT DISTINCT city, state FROM stores ORDER BY state, city",
+        "type": "distinct",
+    },
+    {
+        "question": "What city and state is each store located in?",
         "sql": "SELECT DISTINCT city, state FROM stores ORDER BY state, city",
         "type": "distinct",
     },
