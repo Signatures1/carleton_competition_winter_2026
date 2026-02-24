@@ -18,6 +18,5 @@ numpy==2.2.0
 # Environment variable loading (.env support)
 python-dotenv==1.0.1
 
-# TD vs OLS comparison (Step 6)
-statsmodels==0.14.6
+# GCLS beta-curve plot (Step 6, optional --plot flag)
 matplotlib==3.10.8
