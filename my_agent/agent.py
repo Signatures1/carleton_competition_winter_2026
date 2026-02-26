@@ -258,6 +258,11 @@ class QueryWriter:
         """
         Translate a natural-language question into a SQL query.
 
+        Implements a self-correcting retry loop: if the generated SQL fails
+        a lightweight EXPLAIN validation, the error is fed back to the LLM
+        as an additional conversation turn and the query is regenerated,
+        up to MAX_RETRIES additional times.
+
         Args:
             prompt: Natural language question, e.g.
                     "What are the top 5 most expensive products?"
@@ -265,20 +270,58 @@ class QueryWriter:
         Returns:
             A valid SQL string ready to execute against the bike store DB.
         """
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return "SELECT 'No question provided.' AS message"
+
         few_shot_block = self._build_few_shot_block(prompt)
         system_prompt = self._build_system_prompt(few_shot_block)
 
-        response = self.client.chat(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": f"Question: {prompt}"},
-            ],
-            options={"temperature": 0.0},   # deterministic output
-        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": f"Question: {prompt}"},
+        ]
 
-        raw = response["message"]["content"].strip()
-        return self._extract_sql(raw)
+        last_sql = ""
+        max_retries = 2  # up to 3 total LLM calls
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.client.chat(
+                    model=self.model,
+                    messages=messages,
+                    options={"temperature": 0.0},
+                )
+                raw = response["message"]["content"].strip()
+            except Exception:
+                if attempt == max_retries or not last_sql:
+                    raise
+                continue  # network/server hiccup — retry silently
+
+            sql = self._extract_sql(raw)
+            if sql:
+                last_sql = sql
+
+            error = self._validate_sql(sql)
+            if error is None:
+                return sql  # valid — done
+
+            if attempt < max_retries:
+                # Brief pause so a cold-start server has time to warm up
+                import time as _time
+                _time.sleep(2.0)
+                # Self-correction: give the LLM the exact error and ask it to fix
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"The SQL query you produced has an error:\n{error}\n\n"
+                        "Please return ONLY the corrected SQL query with no "
+                        "explanations, no markdown, and no code fences."
+                    ),
+                })
+
+        return last_sql  # best effort after all retries exhausted
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -351,17 +394,28 @@ class QueryWriter:
         """
         Strip markdown code fences and prose, returning only the SQL.
         Handles:
-          ```sql ... ```
-          ``` ... ```
+          ```sql ... ```   closed fence with language tag
+          ``` ... ```      closed fence without tag
+          ```sql ...       unclosed fence (LLM truncation / cold-start)
           Inline leading SELECT / WITH / etc.
         """
-        # Remove markdown code blocks
+        # 1. Closed code fences (preferred — fully delimited)
         for pattern in (r"```sql\s*(.*?)\s*```", r"```\s*(.*?)\s*```"):
             m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
             if m:
-                return m.group(1).strip()
+                content = m.group(1).strip()
+                if content:   # guard: skip empty fences like ``` ```
+                    return content
 
-        # Walk lines until we find a SQL keyword, then keep everything after
+        # 2. Unclosed fences — LLM returned ```sql\nSELECT ... with no closing ```
+        for pattern in (r"```sql\s*(.+)", r"```\s*(.+)"):
+            m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if m:
+                content = m.group(1).strip()
+                if content:
+                    return content
+
+        # 3. Walk lines until we hit a SQL keyword, then capture everything after
         sql_starters = ("SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE")
         lines = text.split("\n")
         sql_lines = []
@@ -374,8 +428,32 @@ class QueryWriter:
         if sql_lines:
             return "\n".join(sql_lines).strip()
 
-        # Last resort: return the whole text stripped
+        # 4. Last resort: return the whole text stripped
         return text.strip()
+
+    def _validate_sql(self, sql: str) -> str | None:
+        """
+        Lightweight validation using DuckDB's EXPLAIN planner.
+
+        Returns None  if the query parses and plans without error.
+        Returns a str if validation fails (syntax error, unknown column, etc.)
+        — the string is fed back to the LLM as the self-correction prompt.
+
+        Uses a read-only connection to the actual database so that table/column
+        names are resolved against the real schema.
+        """
+        if not sql or not sql.strip():
+            return "Empty query -- no SQL was generated."
+        if sql.strip().startswith("`"):
+            return "Query contains unstripped code-fence markers (backticks)."
+        import duckdb
+        try:
+            con = duckdb.connect(database=self.db_path, read_only=True)
+            con.execute(f"EXPLAIN {sql}")
+            con.close()
+            return None          # valid
+        except Exception as e:
+            return str(e)[:400]  # return first 400 chars of error for LLM
 
     def _format_schema(self) -> str:
         """Format the DB schema as a readable string for the LLM prompt."""

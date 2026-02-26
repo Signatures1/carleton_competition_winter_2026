@@ -25,14 +25,14 @@ the same metric used in the competition.
 
 Usage
 -----
-    # Basic run (uses .env if present)
-    python train.py
+    # Run from my_agent/ directory
+    python tools/train.py
 
     # Override model / host
-    OLLAMA_MODEL=llama3.3 OLLAMA_HOST=http://... python train.py
+    OLLAMA_MODEL=llama3.3 OLLAMA_HOST=http://... python tools/train.py
 
     # Quick smoke-test on a small subset
-    python train.py --quick
+    python tools/train.py --quick
 
 Environment variables
 ---------------------
@@ -42,6 +42,11 @@ OLLAMA_MODEL  Model to use        (default: llama3.2)
 
 import os
 import sys
+
+# Allow imports from the my_agent/ root (parent of this tools/ directory)
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _root)
+
 import argparse
 import time
 from collections import defaultdict
@@ -52,8 +57,8 @@ import duckdb
 # Load .env (config) then secrets.env (credentials) — best-effort, quiet on failure
 try:
     from dotenv import load_dotenv
-    load_dotenv()                      # loads .env  (non-secret settings)
-    load_dotenv("secrets.env")         # loads secrets.env (API keys, gitignored)
+    load_dotenv(os.path.join(_root, ".env"))
+    load_dotenv(os.path.join(_root, "secrets.env"))
 except ImportError:
     pass
 

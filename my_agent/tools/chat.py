@@ -5,8 +5,9 @@ Ask questions in plain English; the agent generates and runs the SQL for you.
 
 Usage
 -----
-    python chat.py              # uses settings from .env / secrets.env
-    python chat.py --no-exec   # print the SQL only, do not execute it
+    # Run from my_agent/ directory
+    python tools/chat.py              # uses settings from .env / secrets.env
+    python tools/chat.py --no-exec   # print the SQL only, do not execute it
 
 Commands
 --------
@@ -17,6 +18,11 @@ Commands
 
 import os
 import sys
+
+# Allow imports from the my_agent/ root (parent of this tools/ directory)
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _root)
+
 import argparse
 import textwrap
 
@@ -25,9 +31,8 @@ import duckdb
 # Load .env then secrets.env so credentials stay out of the main config file
 try:
     from dotenv import load_dotenv
-    _here = os.path.dirname(os.path.abspath(__file__))
-    load_dotenv(os.path.join(_here, ".env"),        override=False)
-    load_dotenv(os.path.join(_here, "secrets.env"), override=False)
+    load_dotenv(os.path.join(_root, ".env"),        override=False)
+    load_dotenv(os.path.join(_root, "secrets.env"), override=False)
 except ImportError:
     pass
 

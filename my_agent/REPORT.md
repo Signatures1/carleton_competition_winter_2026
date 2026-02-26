@@ -23,10 +23,15 @@ Question
 [LLM: mistral-large:latest @ Carleton server]
    │
    ▼
-[SQL extractor / cleaner]
+[SQL extractor / cleaner]   ← handles closed & unclosed code fences
    │
    ▼
-Executable SQL
+[EXPLAIN validator]  ← DuckDB read-only parse + plan check
+   │ if error ──────────────────────────────────────────────────┐
+   ▼                                                            │
+Executable SQL                          [Self-correction loop] ─┘
+                                        error fed back to LLM
+                                        up to 2 retries
 ```
 
 ---
@@ -102,17 +107,17 @@ b_β = (1−β) Φᵀy  +  β ΦᵀLy
 - **Closed-form** — no iterative solver, no convergence issues
 - **Adaptive** — when `ρ = 0` (i.i.d. noise) CV selects `β ≈ 0` and GCLS reduces exactly to OLS
 
-### Empirical validation (Step 6, `python train.py --td-demo`)
+### Empirical validation (Step 6, `python tools/train.py --td-demo`)
 
 | ρ    | OLS err  | GCLS(β=1) err | CV err   | Best β |
 |------|----------|---------------|----------|--------|
-| 0.00 | 0.00268  | 0.00372       | 0.00268  | 0.00   |
-| 0.30 | 0.00601  | 0.00479       | 0.00401  | 0.60   |
-| 0.50 | 0.01065  | 0.00625       | 0.00538  | 0.70   |
-| 0.70 | 0.02068  | 0.00771       | 0.00680  | 0.80   |
-| 0.90 | 0.07289  | 0.01042       | 0.00987  | 0.90   |
+| 0.00 | 0.00627  | 0.00589       | 0.00571  | 0.40   |
+| 0.30 | 0.00853  | 0.00597       | 0.00773  | 0.60   |
+| 0.50 | 0.00844  | 0.00824       | 0.00831  | 0.30   |
+| 0.70 | 0.00832  | 0.00740       | 0.00792  | 0.70   |
+| 0.90 | 0.01582  | 0.01301       | 0.01582  | 0.00   |
 
-Over 50 random seeds at `ρ = 0.7`: GCLS beats OLS in **50/50** seeds; 95% CI for GCLS/OLS ratio is `[0.31, 0.41]` — entirely below 1.0, statistically significant.
+Over 50 random seeds at `ρ = 0.7`: GCLS beats OLS in **39/50** seeds; 95% CI for GCLS/OLS ratio is `[0.5944, 0.8331]` — entirely below 1.0, statistically significant.
 
 ---
 
@@ -189,18 +194,24 @@ The single validation miss is a transient HTTP 500 (model cold-start timeout on 
 
 ```
 my_agent/
-├── agent.py            — QueryWriter class (ExampleRetriever + LLM prompting)
-├── train.py            — Training & evaluation harness
+├── agent.py            — QueryWriter class (ExampleRetriever + LLM + self-correction)
+├── main.py             — Interactive testing interface (provided)
+├── requirements.txt    — Pinned dependencies
+├── runtime.txt         — python-3.13.12
 ├── src/
 │   ├── training_data.py — 93 labeled (question → SQL) examples, stratified split
 │   ├── td_learner.py    — GCLS original method (GCLSLearner, BetaSearchCV)
 │   └── __init__.py
 ├── db/
 │   └── bike_store.py   — DuckDB schema loader
-├── .env                — Non-secret config (host, model)
-├── secrets.env         — API credentials (gitignored)
-├── .env.example        — Template for new contributors
-└── requirements.txt
+├── tools/
+│   ├── train.py        — Evaluation harness + GCLS demo
+│   └── chat.py         — Rich terminal chat interface
+├── docs/
+│   ├── HOW_TO_RUN.txt  — Setup and usage guide
+│   └── .env.example    — Config template
+├── .env                — Non-secret config (host, model) — gitignored
+└── secrets.env         — API credentials — gitignored, DO NOT submit
 ```
 
 ---
@@ -211,16 +222,20 @@ my_agent/
 cd my_agent
 
 # Full evaluation (Carleton server, requires VPN)
-python train.py --delay 1.5
+python tools/train.py --delay 1.5
 
 # Local Ollama (no VPN or API key needed)
 # Set OLLAMA_HOST=http://127.0.0.1:11434 and OLLAMA_MODEL=llama3.2 in .env
 
 # GCLS vs OLS demonstration
-python train.py --td-demo
+python tools/train.py --td-demo
 
 # Quick smoke-test (5 examples per split)
-python train.py --quick
+python tools/train.py --quick
+
+# Interactive terminal chat
+python tools/chat.py
 ```
 
-**Prerequisites:** Carleton VPN active; `secrets.env` present with valid `OLLAMA_API_KEY`. API key expires 2026-04-01.
+**Recommended model:** `mistral-large:latest` (see Section 4 model comparison table).
+**Prerequisites:** Carleton VPN active; `OLLAMA_HOST` and `OLLAMA_API_KEY` set as environment variables.
