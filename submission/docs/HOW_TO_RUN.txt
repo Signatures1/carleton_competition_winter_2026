@@ -1,0 +1,129 @@
+========================================
+ HOW TO RUN & TEST THE SQL QUERY AGENT
+========================================
+
+CURRENT SETUP
+-------------
+- Model : mistral-large:latest (Carleton University server)
+- DB    : bike_store.db (auto-downloaded from Kaggle on first run)
+- Host  : https://rcsllm.carleton.ca/rcsapi
+- VPN   : Carleton VPN required
+
+NOTE: API key expires 2026-04-01. See secrets.env (gitignored, not in repo).
+
+
+----------------------------------------
+ STEP 1 — Connect to Carleton VPN
+----------------------------------------
+
+Connect to the Carleton University VPN before running any evaluation
+that uses the Carleton server (required for https://rcsllm.carleton.ca).
+
+For local testing without VPN, switch to local Ollama (see SWITCHING MODELS).
+
+
+----------------------------------------
+ STEP 2 — Open a terminal in my_agent/
+----------------------------------------
+
+  cd path\to\carleton_competition_winter_2026\my_agent
+
+
+----------------------------------------
+ STEP 3 — Install dependencies (once)
+----------------------------------------
+
+  pip install -r requirements.txt
+
+
+----------------------------------------
+ STEP 4 — Interactive testing (main.py)
+----------------------------------------
+
+  python main.py
+
+Then type any natural language question, for example:
+  > How many customers are there?
+  > What are the top 5 most expensive products?
+  > Show me all orders from 2018
+  > Which store has the most inventory?
+  > What is the total revenue by brand?
+
+Type 'quit' or 'exit' to stop.
+
+
+----------------------------------------
+ STEP 5 — Rich terminal chat (tools/chat.py)
+----------------------------------------
+
+  python tools/chat.py              # full interactive chat with results table
+  python tools/chat.py --no-exec   # show SQL only, skip execution
+
+
+----------------------------------------
+ STEP 6 — Accuracy evaluation (tools/train.py)
+----------------------------------------
+
+Run the full evaluation (val + test accuracy printed to terminal):
+
+  python tools/train.py
+
+Quick run (5 examples per split — fast smoke-test):
+
+  python tools/train.py --quick
+
+Also show the GCLS vs OLS comparison (Graph-Corrected Least Squares):
+
+  python tools/train.py --td-demo
+
+
+----------------------------------------
+ SWITCHING MODELS
+----------------------------------------
+
+Edit the file: my_agent/.env
+
+  Option A — Carleton server (default, requires VPN + API key in secrets.env):
+    OLLAMA_HOST=https://rcsllm.carleton.ca/rcsapi
+    OLLAMA_MODEL=mistral-large:latest
+
+  Option B — Keep using local llama3.2 (no VPN or API key needed):
+    OLLAMA_HOST=http://127.0.0.1:11434
+    OLLAMA_MODEL=llama3.2
+
+  Other Carleton server models:
+    mistral-large:latest   (selected — best accuracy)
+    llama4:scout
+    qwen3:32b
+    qwen3:235b
+    command-r-plus:latest
+
+  Copy docs/.env.example to .env to start from the template.
+
+
+----------------------------------------
+ FILE STRUCTURE REFERENCE
+----------------------------------------
+
+my_agent/
+├── agent.py              <- QueryWriter class (competition submission)
+├── main.py               <- interactive tester (competition provided)
+├── requirements.txt      <- pinned dependencies
+├── runtime.txt           <- python-3.13.12
+├── REPORT.md             <- project report
+├── .env                  <- your Ollama config (gitignored)
+├── secrets.env           <- API credentials (gitignored, DO NOT COMMIT)
+├── db/
+│   └── bike_store.py     <- downloads + loads the DuckDB database
+├── src/
+│   ├── training_data.py  <- labeled question->SQL examples + split logic
+│   └── td_learner.py     <- GCLS original method (GCLSLearner, BetaSearchCV)
+├── tools/
+│   ├── train.py          <- accuracy evaluation + GCLS demo
+│   └── chat.py           <- rich terminal chat interface
+└── docs/
+    ├── HOW_TO_RUN.txt    <- this file
+    └── .env.example      <- template for setting up .env
+
+
+========================================
